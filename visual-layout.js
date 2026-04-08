@@ -14,6 +14,9 @@ const AC_SIZE     = 52;                          // 空调图标尺寸(px)
 const MIN_ROOM_W  = 80;
 const MIN_ROOM_H  = 60;
 const STORAGE_KEY = 'visual_layout_project_001'; // 按项目存储
+const AI_RENDER_LIMIT_PER_ZONE    = 5;
+const AI_RENDER_LIMIT_PROJECT     = 100;
+const AI_RENDER_LIMIT_TOAST_MSG   = '您已经生成了足够多的渲染图，请选择一个使用吧';
 
 /* IndexedDB：存大图 base64，避免 localStorage ~5MB 限制 */
 const IDB_NAME = 'feiyi_visual_layout';
@@ -133,6 +136,7 @@ const S = {
   // ── 多区域 ──
   currentZoneId: null,
   zones: {},                 // { zoneId: zoneState }
+  projectAiRenderCount: 0,    // 全项目成功 AI 渲染次数（持久化）
   // ── 交互临时状态 ──
   drag: null,
   pan:  null,
@@ -360,6 +364,7 @@ function defaultZoneState() {
     phase: 'empty', originalImageUrl: null, currentPreviewUrl: null,
     selectedImageUrl: null, renderHistory: [], isEditing: false,
     canvas: { tx: 0, ty: 0, scale: 1 }, components: [], selectedId: null, nextId: 1,
+    aiRenderCount: 0,
   };
 }
 
@@ -372,12 +377,15 @@ function ensureCurrentZoneId() {
 function saveCurrentZone() {
   ensureCurrentZoneId();
   if (!S.currentZoneId) return;
-  S.zones[S.currentZoneId] = {
+  const zid = S.currentZoneId;
+  const prev = S.zones[zid] || {};
+  S.zones[zid] = {
     phase: S.phase, originalImageUrl: S.originalImageUrl,
     currentPreviewUrl: S.currentPreviewUrl, selectedImageUrl: S.selectedImageUrl,
     renderHistory: S.renderHistory, isEditing: false,
     canvas: { ...S.canvas }, components: S.components.map(c => ({ ...c })),
     selectedId: S.selectedId, nextId: S.nextId,
+    aiRenderCount: prev.aiRenderCount ?? 0,
   };
 }
 
@@ -415,6 +423,7 @@ function switchZone(zoneId) {
     }
     try { document.getElementById('canvasOuter').style.cursor = 'grab'; } catch(_) {}
     document.getElementById('buildingPanel').classList.remove('edit-mode');
+    document.querySelectorAll('#buildingTree .bt-cb').forEach(cb => { cb.disabled = false; });
     removeBuildingTreeDrag();
   }
   saveCurrentZone();
@@ -627,6 +636,15 @@ function switchToOriginal() {
 /* ── AI 渲染（调用 Packey API） ── */
 async function startAIRender() {
   if (!S.originalImageUrl) { showToast('请先上传图片'); return; }
+  ensureCurrentZoneId();
+  if (!S.currentZoneId) { showToast('请先选择楼层'); return; }
+  const zoneCount = S.zones[S.currentZoneId]?.aiRenderCount ?? 0;
+  const proj = S.projectAiRenderCount ?? 0;
+  if (proj >= AI_RENDER_LIMIT_PROJECT || zoneCount >= AI_RENDER_LIMIT_PER_ZONE) {
+    showToast(AI_RENDER_LIMIT_TOAST_MSG);
+    return;
+  }
+
   const aiBtn  = document.getElementById('aiRenderBtn');
   const rgnBtn = document.getElementById('regenBtn');
   const loading = document.getElementById('aiLoading');
@@ -646,6 +664,16 @@ async function startAIRender() {
     document.getElementById('aiBadge').style.display = 'flex';
     rgnBtn.style.display = 'flex';
     markHistoryActive(S.renderHistory.length - 1);
+
+    const zid = S.currentZoneId;
+    if (!S.zones[zid]) S.zones[zid] = defaultZoneState();
+    S.zones[zid].aiRenderCount = (S.zones[zid].aiRenderCount || 0) + 1;
+    S.projectAiRenderCount = (S.projectAiRenderCount || 0) + 1;
+    try {
+      await persistLayoutToStorage();
+    } catch (e) {
+      console.warn('AI 渲染次数已更新，但持久化失败', e);
+    }
   } catch (err) {
     console.error('[PackeyAPI]', err);
     const msg = err && err.message ? String(err.message) : '未知错误';
@@ -842,6 +870,13 @@ function enterEditMode() {
     nextId: S.nextId,
     canvas: { ...S.canvas },
   };
+  S.components.forEach(c => {
+    if (c.type === 'ac') c.checked = false;
+  });
+  document.querySelectorAll('#buildingTree .bt-node.lv3[data-room-id] .bt-cb').forEach(cb => {
+    cb.checked = false;
+  });
+  document.querySelectorAll('#buildingTree .bt-cb').forEach(cb => { cb.disabled = true; });
   S.isEditing = true;
   document.getElementById('compPanel').style.display   = 'flex';
   document.getElementById('editModeBtn').style.display = 'none';
@@ -881,6 +916,7 @@ function exitEditMode(discard = true) {
   document.getElementById('modeText').textContent = '查看模式';
   document.getElementById('canvasOuter').style.cursor = '';
   document.getElementById('buildingPanel').classList.remove('edit-mode');
+  document.querySelectorAll('#buildingTree .bt-cb').forEach(cb => { cb.disabled = false; });
   removeBuildingTreeDrag();
   applyCanvasTransform();
   renderComponents();
@@ -989,6 +1025,10 @@ function getACHoverStatus(ac) {
 function deleteComponent(id) {
   const comp = getComp(id);
   if (!comp) return;
+  if (S.isEditing && comp.type === 'ac' && comp.roomId) {
+    showToast('编辑模式下，房间内空调不支持删除');
+    return;
+  }
   const confirmMsg = comp.type === 'room'
     ? '确定删除该房间及房内所有空调吗？'
     : '确定删除该空调吗？';
@@ -1592,22 +1632,16 @@ function confirmRoomEdit() {
 /* ═══════════════════════════════════════
    保存 / 恢复
 ═══════════════════════════════════════ */
-async function saveLayout() {
+async function persistLayoutToStorage() {
   ensureCurrentZoneId();
   saveCurrentZone();
   const data = {
     version: 2,
     currentZoneId: S.currentZoneId,
     zones: S.zones,
+    projectAiRenderCount: S.projectAiRenderCount || 0,
   };
-  let json;
-  try {
-    json = JSON.stringify(data);
-  } catch (err) {
-    console.error(err);
-    showToast('保存失败：数据无法序列化');
-    return;
-  }
+  const json = JSON.stringify(data);
   try {
     await idbSet(STORAGE_KEY, json);
     try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
@@ -1617,9 +1651,17 @@ async function saveLayout() {
       localStorage.setItem(STORAGE_KEY, json);
     } catch (err2) {
       console.error(err2);
-      showToast('保存失败，请稍后重试');
-      return;
+      throw err2;
     }
+  }
+}
+
+async function saveLayout() {
+  try {
+    await persistLayoutToStorage();
+  } catch (err) {
+    showToast('保存失败，请稍后重试');
+    return;
   }
   showToast('✅ 布局已保存');
   exitEditMode(false); // 保存后退出，不恢复快照
@@ -1628,7 +1670,7 @@ async function saveLayout() {
 
 /** 按需求清除 8 层（8F，zone z1）已持久化的底图 / AI 历史 / 画布组件；仅执行一次（localStorage 标记） */
 async function purgeStored8FImagesOnce() {
-  const flagKey = 'feiyi_stored_z1_8f_cleared_v1';
+  const flagKey = 'feiyi_stored_z1_8f_cleared_v2';
   if (localStorage.getItem(flagKey)) return;
   const prev = S.zones.z1;
   const hadMedia = !!(prev && (
@@ -1639,7 +1681,12 @@ async function purgeStored8FImagesOnce() {
   if (prev) S.zones.z1 = defaultZoneState();
   localStorage.setItem(flagKey, '1');
   if (!prev) return;
-  const data = { version: 2, currentZoneId: S.currentZoneId, zones: S.zones };
+  const data = {
+    version: 2,
+    currentZoneId: S.currentZoneId,
+    zones: S.zones,
+    projectAiRenderCount: S.projectAiRenderCount || 0,
+  };
   let json;
   try {
     json = JSON.stringify(data);
@@ -1675,6 +1722,7 @@ async function loadFromStorage() {
       // 多区域格式
       S.zones = data.zones;
       if (data.currentZoneId) S.currentZoneId = data.currentZoneId;
+      S.projectAiRenderCount = data.projectAiRenderCount ?? 0;
     } else if (data.version === 1) {
       // 旧单区域格式 → 迁移到第一个区域
       // 此时 initZones() 已执行，拿第一个区域 ID
@@ -1691,8 +1739,10 @@ async function loadFromStorage() {
           components: data.components || [],
           selectedId: null,
           nextId: data.nextId || 1,
+          aiRenderCount: 0,
         };
         S.currentZoneId = firstId;
+        S.projectAiRenderCount = 0;
       }
     }
   } catch (err) {
