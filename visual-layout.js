@@ -14,6 +14,7 @@ const AC_SIZE     = 52;                          // 空调图标尺寸(px)
 const MIN_ROOM_W  = 80;
 const MIN_ROOM_H  = 60;
 const STORAGE_KEY = 'visual_layout_project_001'; // 按项目存储
+const NORMAL_GUIDE_SEEN_KEY = 'feiyi_normal_layout_guide_seen_v1';
 const AI_RENDER_LIMIT_PER_ZONE    = 5;
 const AI_RENDER_LIMIT_PROJECT     = 100;
 const AI_RENDER_LIMIT_TOAST_MSG   = '您已经生成了足够多的渲染图，请选择一个使用吧';
@@ -235,6 +236,13 @@ function bindUIEvents() {
     e.stopPropagation();
     saveLayout().catch(err => { console.error(err); showToast('保存失败'); });
   });
+  document.getElementById('normalGuideDialog').addEventListener('click', () => {
+    hideNormalGuide(true);
+    switchLayout('visual');
+  });
+  document.getElementById('normalGuideClose').addEventListener('click', () => {
+    hideNormalGuide(true);
+  });
 
   document.addEventListener('mousedown', e => {
     const menu = document.getElementById('canvasContextMenu');
@@ -280,6 +288,19 @@ function bindUIEvents() {
   });
 
   initBuildingTreeCheckboxSync();
+}
+
+function showNormalGuideIfNeeded() {
+  if (S.layout !== 'normal') return;
+  if (localStorage.getItem(NORMAL_GUIDE_SEEN_KEY)) return;
+  const el = document.getElementById('normalGuideOverlay');
+  if (el) el.style.display = 'flex';
+}
+
+function hideNormalGuide(markSeen = false) {
+  const el = document.getElementById('normalGuideOverlay');
+  if (el) el.style.display = 'none';
+  if (markSeen) localStorage.setItem(NORMAL_GUIDE_SEEN_KEY, '1');
 }
 
 /** 建筑树 data-room-id → 画布上对应房间（含旧数据无 treeRoomId 时按房间名匹配） */
@@ -346,6 +367,8 @@ function updateLayoutUI() {
   document.getElementById('visualLayoutBtn').classList.toggle('active', isVisual);
   document.getElementById('normalToolbar').style.display = isVisual ? 'none' : '';
   if (isVisual) showPhase(S.phase);
+  if (isVisual) hideNormalGuide(false);
+  else showNormalGuideIfNeeded();
   updateZoneUI();
 }
 

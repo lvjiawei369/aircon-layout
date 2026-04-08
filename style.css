@@ -774,6 +774,43 @@ body { font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
 .mb-confirm:hover { background: var(--accent-dark); }
 
 /* ════════════════════════════
+   普通布局首次引导弹窗
+════════════════════════════ */
+.normal-guide-overlay {
+  position: fixed; inset: 0; z-index: 3200;
+  background: rgba(0, 8, 20, 0.68);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 14px;
+}
+.normal-guide-dialog {
+  position: relative;
+  width: min(760px, calc(100vw - 40px));
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+}
+.normal-guide-img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.normal-guide-dialog { cursor: pointer; }
+.normal-guide-close {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.35);
+  background: rgba(15, 30, 50, 0.9);
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 14px rgba(0,0,0,0.35);
+}
+.normal-guide-close:hover { background: rgba(25, 48, 78, 0.95); }
+
+/* ════════════════════════════
    Toast
 ════════════════════════════ */
 .toast {
