@@ -150,6 +150,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initZones();
   initTreeToggle();
   await loadFromStorage();
+  await purgeStored8FImagesOnce();
   // 若无已存区域，默认选第一个
   if (!S.currentZoneId) {
     const first = document.querySelector('#buildingTree .bt-node[data-zone-id]');
@@ -407,9 +408,12 @@ function initZones() {
     }
     if (!node.classList.contains('lv2')) return; // lv3 不是区域
     const label = node.querySelector('.bt-label')?.textContent.trim() || '楼层';
-    if (node.dataset.zoneId) return;
-    node.dataset.zoneId    = 'z' + (++counter);
-    node.dataset.zoneLabel = lv1Label ? `${lv1Label} · ${label}` : label;
+    if (!node.dataset.zoneId) {
+      node.dataset.zoneId = 'z' + (++counter);
+    }
+    if (!node.dataset.zoneLabel) {
+      node.dataset.zoneLabel = lv1Label ? `${lv1Label} · ${label}` : label;
+    }
     node.querySelector('.bt-label')?.addEventListener('click', e => {
       if (S.layout !== 'visual') return;
       e.stopPropagation();
@@ -1503,6 +1507,37 @@ async function saveLayout() {
   updateZoneUI();
 }
 
+/** 按需求清除 8 层（8F，zone z1）已持久化的底图 / AI 历史 / 画布组件；仅执行一次（localStorage 标记） */
+async function purgeStored8FImagesOnce() {
+  const flagKey = 'feiyi_stored_z1_8f_cleared_v1';
+  if (localStorage.getItem(flagKey)) return;
+  const prev = S.zones.z1;
+  const hadMedia = !!(prev && (
+    prev.selectedImageUrl || prev.originalImageUrl
+    || (prev.renderHistory && prev.renderHistory.length)
+    || (prev.components && prev.components.length)
+  ));
+  if (prev) S.zones.z1 = defaultZoneState();
+  localStorage.setItem(flagKey, '1');
+  if (!prev) return;
+  const data = { version: 2, currentZoneId: S.currentZoneId, zones: S.zones };
+  let json;
+  try {
+    json = JSON.stringify(data);
+  } catch (e) {
+    console.warn('清除 8F 后序列化失败', e);
+    return;
+  }
+  try {
+    await idbSet(STORAGE_KEY, json);
+    try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+  } catch (e) {
+    console.warn('清除 8F 写回 IndexedDB 失败', e);
+    try { localStorage.setItem(STORAGE_KEY, json); } catch (_) {}
+  }
+  if (hadMedia) showToast('已清除 8 层（8F）已保存的底图与布局');
+}
+
 async function loadFromStorage() {
   const layoutMode = localStorage.getItem(STORAGE_KEY + '_layout') || 'normal';
   S.layout = layoutMode;
@@ -1620,10 +1655,12 @@ function showCanvasContextMenu(x, y, compId, compType) {
 
 /* ═══════════════════════════════════════
    PackyAPI 中转 → Gemini generateContent
-   端点：https://www.packyapi.com/v1beta/models/gemini-2.5-flash-image:generateContent
+   端点：见 PACKEY_ENDPOINT（与 Google REST 一致，parts 使用 camelCase inlineData）
 ═══════════════════════════════════════ */
 const PACKEY_API_KEY = 'sk-E4IWR67BBxxUu3oy2RMGuVNb0Tvz0fmZwJtgQqjCb8D68MKf';
 const PACKEY_ENDPOINT = 'https://www.packyapi.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent';
+/** 图片生成可能超过 1 分钟，超时后中止并提示，避免一直转圈 */
+const PACKEY_FETCH_TIMEOUT_MS = 240000;
 const PACKEY_PROMPT   = `将这张建筑平面图转换为3D白模渲染风格图片。
 
 【最高优先级——必须严格执行】
@@ -1635,28 +1672,65 @@ const PACKEY_PROMPT   = `将这张建筑平面图转换为3D白模渲染风格�
 【渲染风格要求】
 将墙体、地板、家具全部渲染为纯白色3D模型风格，保留完整的空间结构和家具形态，家具在地面投下柔和阴影，呈现专业建筑白模渲染的立体空间感。所有表面必须是纯色无纹理无线框的。`;
 
-async function callGeminiAPI(imageUrl) {
-  // 1. 读取图片并转 base64
-  const imgResp = await fetch(imageUrl);
-  if (!imgResp.ok) throw new Error('无法读取本地图片');
-  const blob     = await imgResp.blob();
-  const mimeType = blob.type || 'image/jpeg';
-  const base64   = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload  = () => resolve(reader.result.split(',')[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
+function extractImageFromGeminiResponse(data) {
+  const pf = data?.promptFeedback;
+  if (pf?.blockReason) {
+    return { error: `请求被拦截（promptFeedback.blockReason: ${pf.blockReason}）` };
+  }
+  const cands = data?.candidates;
+  if (!cands || cands.length === 0) {
+    const detail = pf ? JSON.stringify(pf) : JSON.stringify(data).slice(0, 400);
+    return { error: `无候选结果（candidates 为空）。${detail}` };
+  }
+  const c0 = cands[0];
+  if (c0.finishReason && c0.finishReason !== 'STOP' && c0.finishReason !== 'FINISH_REASON_STOP') {
+    const fr = c0.finishReason;
+    if (fr === 'SAFETY' || fr === 'IMAGE_SAFETY' || fr === 'PROHIBITED_CONTENT') {
+      return { error: `生成结束原因：${fr}（内容安全策略）` };
+    }
+  }
+  const parts = c0?.content?.parts ?? [];
+  for (const p of parts) {
+    const raw = p.inline_data || p.inlineData;
+    if (raw?.data) {
+      const outMime = raw.mime_type || raw.mimeType || 'image/png';
+      return { dataUrl: `data:${outMime};base64,${raw.data}` };
+    }
+  }
+  const textFallback = parts.map(p => p.text).filter(Boolean).join(' ') || '';
+  return {
+    error: '响应中未找到图片 part（inlineData）。' + (textFallback ? `附带文本：${textFallback.slice(0, 200)}` : `原始片段：${JSON.stringify(data).slice(0, 500)}`),
+  };
+}
 
-  // 2. 按 Gemini generateContent 格式发送
-  console.log('[PackeyAPI] 发送请求…');
-  const resp = await fetch(PACKEY_ENDPOINT, {
-    method:  'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${PACKEY_API_KEY}`,
-    },
-    body: JSON.stringify({
+async function callGeminiAPI(imageUrl) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PACKEY_FETCH_TIMEOUT_MS);
+
+  try {
+    // 1. 读取图片并转 base64
+    const imgResp = await fetch(imageUrl);
+    if (!imgResp.ok) throw new Error('无法读取本地图片');
+    const blob = await imgResp.blob();
+    const mimeType = (blob.type && blob.type.startsWith('image/')) ? blob.type : 'image/jpeg';
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    // 2. 请求体：优先 Google 官方 REST 的 camelCase；若 400 再试 snake_case（部分中转兼容）
+    const bodyCamel = {
+      contents: [{
+        parts: [
+          { text: PACKEY_PROMPT },
+          { inlineData: { mimeType, data: base64 } },
+        ],
+      }],
+      generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+    };
+    const bodySnake = {
       contents: [{
         parts: [
           { text: PACKEY_PROMPT },
@@ -1664,26 +1738,52 @@ async function callGeminiAPI(imageUrl) {
         ],
       }],
       generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
-    }),
-  });
+    };
 
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => String(resp.status));
-    throw new Error(`PackeyAPI 请求失败 (${resp.status}): ${errText}`);
+    const fetchOpts = {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${PACKEY_API_KEY}`,
+      },
+      signal: controller.signal,
+    };
+
+    console.log('[PackeyAPI] 发送请求…', PACKEY_ENDPOINT);
+    let resp = await fetch(PACKEY_ENDPOINT, { ...fetchOpts, body: JSON.stringify(bodyCamel) });
+    let rawText = await resp.text();
+
+    if (!resp.ok && resp.status === 400) {
+      console.warn('[PackeyAPI] camelCase 被拒，改用 inline_data 重试');
+      resp = await fetch(PACKEY_ENDPOINT, { ...fetchOpts, body: JSON.stringify(bodySnake) });
+      rawText = await resp.text();
+    }
+    let data;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      throw new Error(`PackeyAPI 返回非 JSON (${resp.status}): ${rawText.slice(0, 300)}`);
+    }
+
+    if (!resp.ok) {
+      const msg = data?.error?.message || data?.error || rawText.slice(0, 500);
+      throw new Error(`PackeyAPI 请求失败 (${resp.status}): ${msg}`);
+    }
+
+    console.log('[PackeyAPI] 响应 keys:', data ? Object.keys(data) : []);
+
+    const extracted = extractImageFromGeminiResponse(data);
+    if (extracted.error) {
+      console.error('[PackeyAPI] 解析失败', data);
+      throw new Error(extracted.error);
+    }
+    return extracted.dataUrl;
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      throw new Error(`请求超时（>${Math.round(PACKEY_FETCH_TIMEOUT_MS / 1000)}s），请检查网络或稍后再试`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  const data = await resp.json();
-  console.log('[PackeyAPI] 响应:', data);
-
-  // 3. 提取返回的 base64 图片（兼容 snake_case 和 camelCase）
-  const parts   = data?.candidates?.[0]?.content?.parts ?? [];
-  const imgPart = parts.find(p => p.inline_data?.data || p.inlineData?.data);
-  if (!imgPart) {
-    const txt = parts.find(p => p.text)?.text || JSON.stringify(data).slice(0, 200);
-    throw new Error('未返回图片：' + txt);
-  }
-
-  // 4. 返回 data URL（可存 localStorage，刷新不失效）
-  const raw     = imgPart.inline_data || imgPart.inlineData;
-  const outMime = raw.mime_type || raw.mimeType || 'image/png';
-  return `data:${outMime};base64,${raw.data}`;
 }
