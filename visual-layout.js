@@ -409,7 +409,9 @@ function switchZone(zoneId) {
   // 退出编辑模式 UI（不弹 toast）
   if (S.isEditing) {
     S.isEditing = false;
-    document.getElementById('compPanel').style.display   = 'none';
+    hideEditDragGuide();
+    const cp = document.getElementById('compPanel');
+    if (cp) cp.style.display = 'none';
     document.getElementById('editModeBtn').style.display  = 'flex';
     document.getElementById('exitEditBtn').style.display  = 'none';
     document.getElementById('saveBtn').style.display      = 'none';
@@ -472,11 +474,7 @@ function initZones() {
     if (!node.dataset.zoneLabel) {
       node.dataset.zoneLabel = lv1Label ? `${lv1Label} · ${label}` : label;
     }
-    node.querySelector('.bt-label')?.addEventListener('click', e => {
-      if (S.layout !== 'visual') return;
-      e.stopPropagation();
-      switchZone(node.dataset.zoneId);
-    });
+    // 楼层切换交由 initTreeToggle 的 lv2 整行点击统一处理（整行热区）
   });
 }
 
@@ -497,12 +495,18 @@ function initTreeToggle() {
         if (e.target.classList.contains('bt-cb')) return;
         e.stopPropagation();
         toggleNode(node, arrow);
+        if (S.layout === 'visual' && node.dataset.zoneId) {
+          switchZone(node.dataset.zoneId);
+        }
       });
     }
 
     arrow.addEventListener('click', e => {
       e.stopPropagation();
       toggleNode(node, arrow);
+      if (node.classList.contains('lv2') && S.layout === 'visual' && node.dataset.zoneId) {
+        switchZone(node.dataset.zoneId);
+      }
     });
   });
 }
@@ -799,6 +803,7 @@ function screenToCanvas(screenX, screenY) {
 const MAX_EDIT_HISTORY = 50;
 let editHistory = [];
 let editHistoryIndex = -1;
+const FIRST_EDIT_DRAG_GUIDE_KEY = 'feiyi_first_edit_drag_guide_done_v2';
 
 function cloneComponentForHistory(c) {
   if (c.type === 'room') {
@@ -860,6 +865,37 @@ function updateUndoRedoUI() {
   redoBtn.disabled = editHistoryIndex >= editHistory.length - 1;
 }
 
+function hideEditDragGuide() {
+  const workspace = document.getElementById('canvasWorkspace');
+  if (workspace) workspace.classList.remove('first-drag-guide-active');
+  const bubble = document.getElementById('editDragGuideBubble');
+  if (bubble) bubble.remove();
+}
+
+function showFirstEditDragGuideOnce() {
+  if (localStorage.getItem(FIRST_EDIT_DRAG_GUIDE_KEY)) return;
+  const building = document.getElementById('buildingPanel');
+  const workspace = document.getElementById('canvasWorkspace');
+  if (!building || !workspace) return;
+  workspace.classList.add('first-drag-guide-active');
+  const bubble = document.createElement('div');
+  bubble.id = 'editDragGuideBubble';
+  bubble.className = 'edit-drag-guide-bubble';
+  bubble.innerHTML = `
+    <span class="guide-hand-icon" aria-hidden="true">👈</span>
+    <span class="edit-drag-guide-tip-inline">按住左侧房间，拖到右侧画布</span>
+  `;
+  const rect = building.getBoundingClientRect();
+  bubble.style.left = (rect.right + 14) + 'px';
+  bubble.style.top = (rect.top + 130) + 'px';
+  document.body.appendChild(bubble);
+}
+
+function completeFirstEditDragGuide() {
+  localStorage.setItem(FIRST_EDIT_DRAG_GUIDE_KEY, '1');
+  hideEditDragGuide();
+}
+
 /* ═══════════════════════════════════════
    编辑模式
 ═══════════════════════════════════════ */
@@ -878,7 +914,8 @@ function enterEditMode() {
   });
   document.querySelectorAll('#buildingTree .bt-cb').forEach(cb => { cb.disabled = true; });
   S.isEditing = true;
-  document.getElementById('compPanel').style.display   = 'flex';
+  const cp = document.getElementById('compPanel');
+  if (cp) cp.style.display = 'flex';
   document.getElementById('editModeBtn').style.display = 'none';
   document.getElementById('exitEditBtn').style.display = 'flex';
   document.getElementById('saveBtn').style.display     = 'flex';
@@ -890,6 +927,7 @@ function enterEditMode() {
   document.getElementById('canvasOuter').style.cursor = '';
   document.getElementById('buildingPanel').classList.add('edit-mode');
   initBuildingTreeDrag();
+  showFirstEditDragGuideOnce();
   renderComponents();
   initEditHistory();
 }
@@ -902,9 +940,11 @@ function exitEditMode(discard = true) {
     S.canvas     = S._editSnapshot.canvas;
   }
   S._editSnapshot = null;
+  hideEditDragGuide();
   S.isEditing = false;
   deselectAll();
-  document.getElementById('compPanel').style.display   = 'none';
+  const cp2 = document.getElementById('compPanel');
+  if (cp2) cp2.style.display = 'none';
   document.getElementById('editModeBtn').style.display = 'flex';
   document.getElementById('exitEditBtn').style.display = 'none';
   document.getElementById('saveBtn').style.display     = 'none';
@@ -1385,8 +1425,8 @@ function onCanvasMouseDown(e) {
    全局 mousemove
 ═══════════════════════════════════════ */
 function onGlobalMouseMove(e) {
-  // 从面板拖入
-  if (S.drag && S.drag.type === 'from-panel') {
+  // 从面板或建筑树拖入
+  if (S.drag && (S.drag.type === 'from-panel' || S.drag.type === 'from-building')) {
     const ghost = document.getElementById('dragGhost');
     ghost.style.left = e.clientX + 'px';
     ghost.style.top  = e.clientY + 'px';
@@ -1474,7 +1514,10 @@ function onGlobalMouseUp(e) {
       }
       if (newId) selectComponent(newId);
       renderComponents();
-      if (newId) recordEditHistory();
+      if (newId) {
+        recordEditHistory();
+        if (S.drag.type === 'from-building') completeFirstEditDragGuide();
+      }
     }
     // 恢复建筑树节点样式
     if (S.drag.sourceEl) S.drag.sourceEl.classList.remove('drag-active');
@@ -1523,6 +1566,23 @@ function syncRoomACs(roomId) {
    建筑树拖拽：进入编辑模式时注入手柄
 ═══════════════════════════════════════ */
 function initBuildingTreeDrag() {
+  const startBuildingRoomDrag = (e, node, roomId, name) => {
+    if (!S.isEditing || S.phase !== 'canvas') return;
+    if (e.target.closest('.bt-cb')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    node.classList.add('drag-active');
+
+    const ghost = document.getElementById('dragGhost');
+    ghost.className = 'drag-ghost room-ghost';
+    ghost.innerHTML = `<span style="font-size:11px;color:#fff;padding:2px 6px">${name}</span>`;
+    ghost.style.display = 'block';
+    ghost.style.left = e.clientX + 'px';
+    ghost.style.top  = e.clientY + 'px';
+
+    S.drag = { type: 'from-building', roomId, sourceEl: node };
+  };
+
   const nodes = document.querySelectorAll('.bt-node.lv3[data-room-id]');
   nodes.forEach(node => {
     if (node.querySelector('.bt-drag-handle')) return;
@@ -1535,26 +1595,20 @@ function initBuildingTreeDrag() {
     handle.innerHTML = `<svg width="9" height="9" viewBox="0 0 24 24"><path d="M5 9l7-7 7 7M5 15l7 7 7-7" stroke="currentColor" stroke-width="2" fill="none"/></svg> 拖入`;
     handle.title = `拖拽「${name}」到画布`;
     node.appendChild(handle);
+    node.style.cursor = 'grab';
 
     handle.addEventListener('mousedown', e => {
-      if (!S.isEditing || S.phase !== 'canvas') return;
-      e.preventDefault();
-      e.stopPropagation();
-      node.classList.add('drag-active');
-
-      const ghost = document.getElementById('dragGhost');
-      ghost.className = 'drag-ghost room-ghost';
-      ghost.innerHTML = `<span style="font-size:11px;color:#fff;padding:2px 6px">${name}</span>`;
-      ghost.style.display = 'block';
-      ghost.style.left = e.clientX + 'px';
-      ghost.style.top  = e.clientY + 'px';
-
-      S.drag = { type: 'from-building', roomId, sourceEl: node };
+      startBuildingRoomDrag(e, node, roomId, name);
+    });
+    node.addEventListener('mousedown', e => {
+      if (e.target.closest('.bt-drag-handle')) return;
+      startBuildingRoomDrag(e, node, roomId, name);
     });
   });
 }
 
 function removeBuildingTreeDrag() {
+  document.querySelectorAll('.bt-node.lv3[data-room-id]').forEach(n => { n.style.cursor = ''; });
   document.querySelectorAll('.bt-drag-handle').forEach(h => h.remove());
   document.querySelectorAll('.bt-node.drag-active').forEach(n => n.classList.remove('drag-active'));
 }
