@@ -274,6 +274,55 @@ function bindUIEvents() {
   document.querySelectorAll('.pos-btn').forEach(btn => {
     btn.addEventListener('click', () => selectPos(btn));
   });
+
+  initBuildingTreeCheckboxSync();
+}
+
+/** 建筑树 data-room-id → 画布上对应房间（含旧数据无 treeRoomId 时按房间名匹配） */
+function findCanvasRoomsByTreeRoomId(treeRoomId) {
+  const meta = ROOM_DATA[treeRoomId];
+  const byName = meta?.name;
+  return S.components.filter(c => {
+    if (c.type !== 'room') return false;
+    if (c.treeRoomId === treeRoomId) return true;
+    if (!c.treeRoomId && byName && c.name === byName) return true;
+    return false;
+  });
+}
+
+/** 左侧勾选房间时，同步勾选/取消该房间在画布内的所有空调 */
+function applyTreeRoomCheckboxToCanvas(treeRoomId, checked) {
+  if (S.layout !== 'visual' || S.phase !== 'canvas') return;
+  const rooms = findCanvasRoomsByTreeRoomId(treeRoomId);
+  let changed = false;
+  rooms.forEach(room => {
+    if (!room.acIds || !room.acIds.length) return;
+    room.acIds.forEach(acId => {
+      const ac = getComp(acId);
+      if (ac && ac.type === 'ac' && !!ac.checked !== checked) {
+        ac.checked = checked;
+        changed = true;
+      }
+    });
+  });
+  if (changed) {
+    renderComponents();
+    recordEditHistory();
+  }
+}
+
+function initBuildingTreeCheckboxSync() {
+  const tree = document.getElementById('buildingTree');
+  if (!tree) return;
+  tree.addEventListener('change', e => {
+    const t = e.target;
+    if (!t.classList || !t.classList.contains('bt-cb')) return;
+    const node = t.closest('.bt-node[data-room-id]');
+    if (!node || !node.classList.contains('lv3')) return;
+    const treeRoomId = node.dataset.roomId;
+    if (!treeRoomId) return;
+    applyTreeRoomCheckboxToCanvas(treeRoomId, t.checked);
+  });
 }
 
 /* ═══════════════════════════════════════
@@ -859,6 +908,7 @@ function createRoomWithACs(cx, cy, roomId) {
     w: roomW, h: roomH,
     name: data.name, namePos: 'top-left',
     acIds: [],
+    treeRoomId: roomId,
   });
 
   data.acs.forEach(acDef => {
@@ -870,6 +920,7 @@ function createRoomWithACs(cx, cy, roomId) {
       state,
       roomId: id,
       sourceName: acDef.name,
+      checked: false,
     });
     const room = getComp(id);
     if (room) room.acIds.push(acId);
@@ -903,11 +954,37 @@ function createAC(x, y, sourceName) {
     state,
     roomId: null,
     sourceName: sourceName || '',
+    checked: false,
   });
   return id;
 }
 
 function getComp(id) { return S.components.find(c => c.id === id) || null; }
+
+/** 画布空调悬浮卡片用的演示状态（与列表卡片风格一致） */
+function getACHoverStatus(ac) {
+  const room = ac.roomId ? getComp(ac.roomId) : null;
+  let roomTitle = room?.name || '';
+  if (!roomTitle && ac.sourceName) {
+    roomTitle = ac.sourceName.replace(/-\d+[^-]*$/, '').trim() || ac.sourceName;
+  }
+  if (!roomTitle) roomTitle = '空调';
+  const modeMap = {
+    cold: '制冷', warm: '制热', fan: '送风', dry: '除湿',
+    off: '关机', normal: '自动', error: '故障',
+  };
+  const mode = modeMap[ac.state] || '制冷';
+  let h = 0;
+  for (let i = 0; i < String(ac.id).length; i++) h = (h + ac.id.charCodeAt(i)) | 0;
+  const setTemp = 18 + (Math.abs(h) % 8);
+  const roomTemp = 20 + (Math.abs(h >> 3) % 4);
+  const powerOn = ac.state !== 'off' && ac.state !== 'error';
+  return {
+    roomTitle, setTemp, roomTemp, mode,
+    fan: '低风',
+    powerLabel: powerOn ? '开机' : '关机',
+  };
+}
 
 function deleteComponent(id) {
   const comp = getComp(id);
@@ -1126,12 +1203,45 @@ function renderRoom(room, editMode) {
 
 function renderAC(ac, editMode) {
   const el = document.createElement('div');
-  el.className = 'ac-comp' + (editMode ? ' edit-mode' : '') + (S.selectedId === ac.id ? ' selected' : '');
+  const isChecked = !!ac.checked;
+  const st = getACHoverStatus(ac);
+  el.className = 'ac-comp' + (editMode ? ' edit-mode' : '') + (S.selectedId === ac.id ? ' selected' : '') + (isChecked ? ' ac-checked' : '');
   el.dataset.id   = ac.id;
   el.dataset.type = 'ac';
   el.style.cssText = `left:${ac.x}px;top:${ac.y}px;`;
   el.innerHTML = `
-    <img src="${IMAGES_PATH}${ac.state}.png" alt="${ac.state}" width="${AC_SIZE}" height="${AC_SIZE}">
+    <div class="ac-hover-card" role="tooltip">
+      <div class="ac-hover-card-inner">
+        <div class="ahc-head">
+          <span class="ahc-title">${escapeHTML(st.roomTitle)}</span>
+          <span class="ahc-head-icons" aria-hidden="true">📶 🔔</span>
+          <span class="ahc-tag">物业</span>
+        </div>
+        <div class="ahc-mid">
+          <div>
+            <div class="ahc-temp-big">${st.setTemp}<span class="ahc-deg">℃</span></div>
+            <div class="ahc-temp-sub">室温${st.roomTemp}℃</div>
+          </div>
+          <div class="ahc-mode-icon" aria-hidden="true">
+            <img src="${IMAGES_PATH}${ac.state}.png" alt="" width="40" height="40">
+          </div>
+        </div>
+        <div class="ahc-foot">
+          <span>${escapeHTML(st.mode)}</span>
+          <span>${escapeHTML(st.fan)}</span>
+          <span>${escapeHTML(st.powerLabel)}</span>
+        </div>
+      </div>
+    </div>
+    <div class="ac-comp-visual">
+      <img src="${IMAGES_PATH}${ac.state}.png" alt="${ac.state}" width="${AC_SIZE}" height="${AC_SIZE}">
+      <span class="ac-check-overlay" aria-hidden="true">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" fill="rgba(26,127,240,0.92)" stroke="#fff" stroke-width="1.5"/>
+          <path d="M7 12l3 3 6-6" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+    </div>
     <div class="ac-ring"></div>
     ${ac.sourceName ? `<div class="ac-source-name">${escapeHTML(ac.sourceName)}</div>` : ''}`;
 
@@ -1142,6 +1252,15 @@ function renderAC(ac, editMode) {
       e.stopPropagation();
       selectComponent(ac.id);
       showCanvasContextMenu(e.clientX, e.clientY, ac.id, 'ac');
+    });
+  } else {
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      const c = getComp(ac.id);
+      if (!c || c.type !== 'ac') return;
+      c.checked = !c.checked;
+      renderComponents();
+      recordEditHistory();
     });
   }
 

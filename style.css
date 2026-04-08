@@ -577,10 +577,25 @@ body { font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
 .ac-comp {
   position: absolute; width: 52px; height: 52px;
   display: flex; align-items: center; justify-content: center;
-  cursor: default;
+  cursor: default; overflow: visible; z-index: 1;
 }
+.ac-comp:hover { z-index: 40; }
 .ac-comp.edit-mode { cursor: move; }
-.ac-comp img { width: 52px; height: 52px; object-fit: contain; pointer-events: none; }
+.ac-comp:not(.edit-mode) { cursor: pointer; }
+.ac-comp-visual {
+  position: relative; width: 52px; height: 52px;
+  display: flex; align-items: center; justify-content: center;
+}
+.ac-comp-visual img {
+  width: 52px; height: 52px; object-fit: contain; pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.ac-comp.ac-checked .ac-comp-visual img { opacity: 0.45; }
+.ac-check-overlay {
+  position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.ac-comp.ac-checked .ac-check-overlay { display: flex; }
 .ac-comp .ac-ring {
   position: absolute; inset: -3px; border-radius: 50%;
   border: 2px solid transparent; transition: border-color 0.15s;
@@ -588,6 +603,51 @@ body { font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 .ac-comp.selected .ac-ring { border-color: #fff; }
 .ac-comp.edit-mode:hover .ac-ring { border-color: rgba(255,255,255,0.5); }
+
+/* 画布空调：悬浮状态卡片（参考列表卡片深色渐变风格） */
+.ac-hover-card {
+  position: absolute; left: 50%; bottom: 100%;
+  transform: translateX(-50%);
+  margin-bottom: 8px;
+  width: 200px; z-index: 50;
+  opacity: 0; visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.18s ease, visibility 0.18s ease;
+}
+.ac-comp:hover .ac-hover-card {
+  opacity: 1; visibility: visible;
+}
+.ac-hover-card-inner {
+  background: linear-gradient(160deg, #0d2847 0%, #1565a8 55%, #1a7ff0 100%);
+  border-radius: 14px; padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  color: #fff; font-size: 11px;
+}
+.ahc-head {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+  font-size: 11px;
+}
+.ahc-title { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ahc-head-icons { font-size: 10px; opacity: 0.9; letter-spacing: 1px; }
+.ahc-tag { font-size: 10px; opacity: 0.85; }
+.ahc-mid {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; margin-bottom: 8px;
+}
+.ahc-temp-big { font-size: 26px; font-weight: 700; line-height: 1; letter-spacing: -0.5px; }
+.ahc-deg { font-size: 12px; font-weight: 500; margin-left: 1px; }
+.ahc-temp-sub { font-size: 10px; opacity: 0.75; margin-top: 4px; }
+.ahc-mode-icon {
+  flex-shrink: 0; opacity: 0.95;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.25));
+}
+.ahc-mode-icon img { width: 40px; height: 40px; object-fit: contain; }
+.ahc-foot {
+  display: flex; justify-content: space-between; gap: 4px;
+  padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.15);
+  font-size: 10px; opacity: 0.92;
+}
+.ahc-foot span { flex: 1; text-align: center; white-space: nowrap; }
 
 /* ════════════════════════════
    拖拽幽灵
@@ -742,9 +802,7 @@ body { font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
 .bt-node.lv3.drag-active { background: rgba(26,127,240,0.18); }
 
 /* ────────────────────────────
-   空调组件：来源名称标签
-──────────────────────────── */
-.ac-comp { position: absolute; width: 52px; cursor: default; }
+   空调组件：来源名称标签（画布绝对定位见上方 .ac-comp） */
 .ac-source-name {
   position: absolute; top: calc(100% + 3px); left: 50%;
   transform: translateX(-50%);
