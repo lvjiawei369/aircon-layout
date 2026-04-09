@@ -143,6 +143,7 @@ const S = {
   pan:  null,
   resize: null,
   editingRoomId: null,
+  editingAcId: null,
   selectedPosBtn: null,
 };
 
@@ -280,6 +281,17 @@ function bindUIEvents() {
   document.getElementById('roomNameInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') confirmRoomEdit();
     if (e.key === 'Escape') document.getElementById('roomModal').style.display = 'none';
+  });
+
+  document.getElementById('acModalCloseBtn').addEventListener('click', closeAcModal);
+  document.getElementById('acModalCancelBtn').addEventListener('click', closeAcModal);
+  document.getElementById('acModalConfirmBtn').addEventListener('click', confirmAcEdit);
+  document.getElementById('acNameModal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeAcModal();
+  });
+  document.getElementById('acNameInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') confirmAcEdit();
+    if (e.key === 'Escape') closeAcModal();
   });
 
   // 位置选择按钮
@@ -424,7 +436,7 @@ function loadZone(zoneId) {
   S.components       = (z.components || []).map(c => ({ ...c }));
   S.selectedId       = null;
   S.nextId           = z.nextId ?? 1;
-  S.drag = null; S.pan = null; S.resize = null; S.editingRoomId = null;
+  S.drag = null; S.pan = null; S.resize = null; S.editingRoomId = null; S.editingAcId = null;
 }
 
 function switchZone(zoneId) {
@@ -956,6 +968,7 @@ function enterEditMode() {
 }
 
 function exitEditMode(discard = true) {
+  closeAcModal();
   // discard=true：不保存，恢复快照；discard=false：保存后调用，不恢复
   if (discard && S._editSnapshot) {
     S.components = S._editSnapshot.components;
@@ -1346,10 +1359,26 @@ function renderAC(ac, editMode) {
       </span>
     </div>
     <div class="ac-ring"></div>
-    ${ac.sourceName ? `<div class="ac-source-name">${escapeHTML(ac.sourceName)}</div>` : ''}`;
+    ${editMode
+      ? `<div class="ac-source-name ac-source-name-editable">${ac.sourceName ? escapeHTML(ac.sourceName) : '<span class="ac-name-placeholder">未命名</span>'}</div>`
+      : (ac.sourceName ? `<div class="ac-source-name">${escapeHTML(ac.sourceName)}</div>` : '')}`;
 
   if (editMode) {
-    el.addEventListener('mousedown', e => startComponentDrag(e, ac.id));
+    el.addEventListener('click', e => {
+      if (!e.target.closest('.ac-source-name-editable')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      selectComponent(ac.id);
+      openAcModal(ac.id);
+    });
+    el.addEventListener('mousedown', e => {
+      if (e.target.closest('.ac-source-name-editable')) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      startComponentDrag(e, ac.id);
+    });
     el.addEventListener('contextmenu', e => {
       e.preventDefault();
       e.stopPropagation();
@@ -1641,6 +1670,13 @@ function removeBuildingTreeDrag() {
 ═══════════════════════════════════════ */
 function onKeyDown(e) {
   if (!S.isEditing) return;
+  if (e.key === 'Escape') {
+    const acModal = document.getElementById('acNameModal');
+    if (acModal && acModal.style.display === 'flex') {
+      closeAcModal();
+      return;
+    }
+  }
   // 忽略输入框内（含房间名弹窗）
   if (['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
   if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
@@ -1704,6 +1740,34 @@ function confirmRoomEdit() {
   renderComponents();
   recordEditHistory();
   showToast('房间名已更新');
+}
+
+/* ═══════════════════════════════════════
+   空调名称编辑弹窗
+═══════════════════════════════════════ */
+function openAcModal(acId) {
+  S.editingAcId = acId;
+  const ac = getComp(acId);
+  if (!ac || ac.type !== 'ac') return;
+  document.getElementById('acNameInput').value = ac.sourceName || '';
+  document.getElementById('acNameModal').style.display = 'flex';
+  setTimeout(() => document.getElementById('acNameInput').focus(), 50);
+}
+
+function closeAcModal() {
+  document.getElementById('acNameModal').style.display = 'none';
+  S.editingAcId = null;
+}
+
+function confirmAcEdit() {
+  if (!S.editingAcId) return;
+  const ac = getComp(S.editingAcId);
+  if (!ac || ac.type !== 'ac') return;
+  ac.sourceName = document.getElementById('acNameInput').value.trim();
+  closeAcModal();
+  renderComponents();
+  recordEditHistory();
+  showToast('空调名称已更新');
 }
 
 /* ═══════════════════════════════════════

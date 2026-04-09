@@ -896,6 +896,16 @@ body { font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   padding: 1px 6px; border-radius: 3px; pointer-events: none;
   max-width: 80px; overflow: hidden; text-overflow: ellipsis;
 }
+.ac-comp.edit-mode .ac-source-name-editable {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.ac-comp.edit-mode .ac-source-name-editable:hover {
+  background: rgba(26,127,240,0.55);
+}
+.ac-name-placeholder {
+  color: rgba(255,255,255,0.5);
+}
 
 /* ════════════════════════════
    区域/楼层选择条
